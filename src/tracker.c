@@ -7,31 +7,33 @@
 #include <string.h> //string features
 
 
+//macro for buffer to get lines with specific length
 #define MAX_LINES_L 100
 #define MAX_LENGTH_L 1000
 
 
 typedef unsigned long long int ull;
 
-//semaphores
+//semaphores to signal either is empty or full, for producent and consumer.
 sem_t empty;
 sem_t full;
 
-//for increment/dec in buffer.
+//for increment/dec in buffers during produce/consume process.
 int in = 0;
 int out = 0;
 
-//for tokens
+//for tokens - it works with split function
 char **tokens = NULL;
 int count = 0;
 
 //Global memory array for strings in /proc/stat
-char buffr_mem[MAX_LINES_L][MAX_LENGTH_L];
+static char buffr_mem[MAX_LINES_L][MAX_LENGTH_L];
 
-//mutex rules
+//Using mutex to better maintenance.
 pthread_mutex_t mutex;
-FILE* dataFile = NULL;
 
+
+FILE* dataFile = NULL;
 
 #ifndef CPU_H
 #define CPU_H
@@ -64,14 +66,9 @@ void Core_ctor(Cpu * const me, ull usertime, ull nicetime, ull systemtime, ull i
 	me->_soft_irq = soft_irq;
 }
 
-void Core_dtor(Cpu * const _me)
-{
-	if(_me != NULL)
-		free(_me->me);
-}
-
 #endif /* CPU_H */
 
+/*I've used this split function, because strtok(); works bad with threads and affect on performance too.*/
 int split (const char *txt, char delim, char ***tokens)
 {
     int *tklen, *t, count = 1;
@@ -96,26 +93,40 @@ int split (const char *txt, char delim, char ***tokens)
     return count;
 }
 
-int initToken_val(unsigned int line)
+
+static Cpu* core = NULL;
+
+void freeingToken()
 {	
- 	count = split(&buffr_mem[line][1000], ' ', &tokens);
-	return count;
+	//freeing tokens
+	for(int i = 0; i < count; i++)
+	{
+		free(tokens[i]);
+	}
+	
+	free(tokens);
+}
+
+
+void initCPU(size_t line)
+{	
+		count = split(&buffr_mem[line][1000], ' ', &tokens);
+		Core_ctor(&core[line], atoll(tokens[1]), atoll(tokens[2]), atoll(tokens[3]), atoll(tokens[4]), atoll(tokens[5]), atoll(tokens[6]), atoll(tokens[7]));
+		
+		freeingToken();
 }
 
 
 void* Reader(void* file)
 {
+
 	 dataFile = fopen(file, "r");
 
 	 if(dataFile == NULL)
 	 {
 		  printf("Cannot read the file.\n");
 	 }
-	
-	 
-	sleep(1);
-		
-	
+
 	int line = 0;
 
 	while(!feof(dataFile) && !ferror(dataFile))
@@ -125,55 +136,57 @@ void* Reader(void* file)
 				line++;
 			}
 	}
-
+			
 	fclose(dataFile);
 
-//	core = calloc(4, sizeof * core);
 
-
-	char **tokens;
-	int count = 0;
-	
-
-	//CPU00
-
-	/* core[0].usertime = atoll(tokens[1]); */
-	/* core[0].nicetime = atoll(tokens[2]); */
-	/* core[0].systemtime = atoll(tokens[3]); */
-	/* core[0].idletime = atoll(tokens[4]); */
-	/* core[0].io_wait = atoll(tokens[5]); */
-	/* core[0].irq = atoll(tokens[6]); */
-	/* core[0].soft_irq = atoll(tokens[7]); */
-
-	//CPU01
-
-
-
-//	printf("%s", &buffr_mem[3][1000]);	
-
-
-	//freeing tokens
-	for(int i = 0; i < count; i++)
+	//initialize and assignment cpu for consumer.
+	for(int i = 0; i < 4; i++)
 	{
-		free(tokens[i]);
-	}
-	
-	free(tokens);
+		sem_wait(&empty);
+		pthread_mutex_lock(&mutex);
 
-	/* free(core); */
-	/* core = NULL; */
+		core = calloc(4, sizeof(*core));
+
+		initCPU(i);
+
+		//freeing cores
+		free(core);
+
+		pthread_mutex_unlock(&mutex);
+		sem_post(&full);
+	}
 
 	 return NULL;
 }
 
 
+void* Analyzer()
+{
+	for(int i = 0; i < 4; i++)
+	{
+		sem_wait(&full);
+		pthread_mutex_lock(&mutex);
+
+
+		pthread_mutex_unlock(&mutex);
+		sem_post(&empty);
+	}
+
+	return NULL;
+}
 
 int main(void)
 {
-	pthread_t id_thread;
+	pthread_t cpu_id[4];
+	pthread_mutex_init(&mutex, NULL);
+	sem_init(&empty, 0, 4);
+	sem_init(&full, 0, 0);	
 
-	pthread_create(&id_thread, NULL, Reader, "/proc/stat");
-	pthread_join(id_thread, NULL);
+	pthread_create(&cpu_id[0], NULL, Reader, "/proc/stat");
+
+	pthread_join(cpu_id[0], NULL);
+	
 	
 
 	return EXIT_SUCCESS;
