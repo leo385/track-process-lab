@@ -11,16 +11,13 @@
 #define MAX_LINES_L 100
 #define MAX_LENGTH_L 1000
 
+#define CORE_NUM 4
+#define THREAD_NUM 7
+#define BUFF_SIZE 7
+
 
 typedef unsigned long long int ull;
 
-//semaphores to signal either is empty or full, for producent and consumer.
-sem_t empty;
-sem_t full;
-
-//for increment/dec in buffers during produce/consume process.
-int in = 0;
-int out = 0;
 
 //for tokens - it works with split function
 char **tokens = NULL;
@@ -29,9 +26,19 @@ int count = 0;
 //Global memory array for strings in /proc/stat
 static char buffr_mem[MAX_LINES_L][MAX_LENGTH_L];
 
-//Using mutex to better maintenance.
+//Array to send values by producer and consume by consumer.
+ull buffer[CORE_NUM][BUFF_SIZE];
+
+//for increment/dec in buffers during produce/consume process.
+int in = 0;
+int out = 0;
+
+//Using mutex to conclusion between threads.
 pthread_mutex_t mutex;
 
+//semaphores to signal either is empty or full, for producent and consumer.
+sem_t empty;
+sem_t full;
 
 FILE* dataFile = NULL;
 
@@ -109,85 +116,135 @@ void freeingToken()
 
 
 void initCPU(size_t line)
-{	
+{
+		//split columns from one line by ' ' char and get it to **tokens.
 		count = split(&buffr_mem[line][1000], ' ', &tokens);
-		Core_ctor(&core[line], atoll(tokens[1]), atoll(tokens[2]), atoll(tokens[3]), atoll(tokens[4]), atoll(tokens[5]), atoll(tokens[6]), atoll(tokens[7]));
-		
-		freeingToken();
+		Core_ctor(&core[line], atoll(tokens[1]), atoll(tokens[2]), atoll(tokens[3]), atoll(tokens[4]), atoll(tokens[5]), atoll(tokens[6]), atoll(tokens[7]));	
+
+		//assignment values from tokens to buffer.
+		buffer[0][in] = atoll(tokens[in + 1]);
+
 }
 
 
 void* Reader(void* file)
 {
-
-	 dataFile = fopen(file, "r");
-
-	 if(dataFile == NULL)
-	 {
-		  printf("Cannot read the file.\n");
-	 }
-
-	int line = 0;
-
-	while(!feof(dataFile) && !ferror(dataFile))
+	for(;;)
 	{
-			if(fgets(buffr_mem[line], MAX_LENGTH_L, dataFile) != NULL)
-			{
-				line++;
-			}
-	}
+
+			int line = 0;
 			
-	fclose(dataFile);
+			dataFile = fopen(file, "r");
+
+			 if(dataFile == NULL)
+			 {
+				  printf("Cannot read the file.\n");
+			 }
 
 
-	//initialize and assignment cpu for consumer.
-	for(int i = 0; i < 4; i++)
-	{
-		sem_wait(&empty);
-		pthread_mutex_lock(&mutex);
+			//count lines in file and get to buffer
+			while(!feof(dataFile) && !ferror(dataFile))
+			{
+					if(fgets(buffr_mem[line], MAX_LENGTH_L, dataFile) != NULL)
+					{
+						line++;
+					}
+			}
+		
 
-		core = calloc(4, sizeof(*core));
+			sleep(1);
 
-		initCPU(i);
+		   //Add to the buffer		 
+			sem_wait(&empty);
+			pthread_mutex_lock(&mutex);
 
-		//freeing cores
-		free(core);
+			
+			initCPU(0);	
+		    initCPU(1);
+			initCPU(2);
+			initCPU(3);
 
-		pthread_mutex_unlock(&mutex);
-		sem_post(&full);
+			in = (in+1)%BUFF_SIZE;
+	
+			//freeing tokens to update values there.
+			freeingToken();
+
+			pthread_mutex_unlock(&mutex);
+			sem_post(&full);
 	}
-
-	 return NULL;
 }
 
 
 void* Analyzer()
 {
-	for(int i = 0; i < 4; i++)
+	for(;;)
 	{
+
+		//Remove from the buffer
 		sem_wait(&full);
 		pthread_mutex_lock(&mutex);
+	
+		//Retrieve values from buffer	
+		core[0]._usertime = buffer[0][0];
 
-
+	//	out = (out+1)%BUFF_SIZE;
+	
 		pthread_mutex_unlock(&mutex);
 		sem_post(&empty);
+
+
+		//Consume
+		printf("%llu\n", core[0]._usertime);
+		sleep(1);
 	}
 
-	return NULL;
 }
 
 int main(void)
 {
-	pthread_t cpu_id[4];
+	pthread_t pro[THREAD_NUM], con[THREAD_NUM];
 	pthread_mutex_init(&mutex, NULL);
-	sem_init(&empty, 0, 4);
-	sem_init(&full, 0, 0);	
+	sem_init(&empty, 0, THREAD_NUM);
+	sem_init(&full, 0, 0);
 
-	pthread_create(&cpu_id[0], NULL, Reader, "/proc/stat");
+	core = calloc(4, sizeof(*core));
 
-	pthread_join(cpu_id[0], NULL);
-	
-	
+	for(int i = 0; i < THREAD_NUM; i++)
+	{
+		//producent
+		if(pthread_create(&pro[i], NULL, Reader, "/proc/stat") != 0)
+			perror("Failed to create thread.\n");
+
+		//consumer
+		if(pthread_create(&con[i], NULL, Analyzer, NULL) != 0)
+			perror("Failed to create thread.\n");
+	}
+
+
+	for(int i = 0; i < THREAD_NUM; i++)
+	{
+		
+		if(pthread_join(pro[i], NULL) != 0)
+			perror("Failed to join thread.\n");	
+
+		if(pthread_join(con[i], NULL) != 0)
+			perror("Failed to join thread.\n");
+
+	}
+
+
+
+	//freeing cores
+	free(core);
+
+	//destroy semaphores and mutual conclusion too.
+	sem_destroy(&empty);
+	sem_destroy(&full);
+
+	pthread_mutex_destroy(&mutex);
+
+	//destroy file
+	fclose(dataFile);
 
 	return EXIT_SUCCESS;
 
