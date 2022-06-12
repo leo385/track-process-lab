@@ -42,6 +42,8 @@ sem_t full;
 
 FILE* dataFile = NULL;
 
+double CPU_PERCENTAGE[CORE_NUM];
+
 #ifndef CPU_H
 #define CPU_H
 
@@ -56,6 +58,9 @@ typedef struct
 	ull _io_wait;
 	ull _irq;
 	ull _soft_irq;
+	ull _steal;
+	ull _guest;
+	ull _guest_nice;
 
 	struct Cpu *me;
 
@@ -115,14 +120,14 @@ void freeingToken()
 }
 
 
-void initCPU(size_t line)
+void initCPU(unsigned int cpu, size_t line)
 {
 		//split columns from one line by ' ' char and get it to **tokens.
 		count = split(&buffr_mem[line][1000], ' ', &tokens);
 		Core_ctor(&core[line], atoll(tokens[1]), atoll(tokens[2]), atoll(tokens[3]), atoll(tokens[4]), atoll(tokens[5]), atoll(tokens[6]), atoll(tokens[7]));	
 
-		//assignment values from tokens to buffer.
-		buffer[0][in] = atoll(tokens[in + 1]);
+		//assignment values from tokens to buffer with converting to unsigned ll int.
+		buffer[cpu][in] = atoll(tokens[in + 1]);
 
 }
 
@@ -158,12 +163,13 @@ void* Reader(void* file)
 			sem_wait(&empty);
 			pthread_mutex_lock(&mutex);
 
-			
-			initCPU(0);	
-		    initCPU(1);
-			initCPU(2);
-			initCPU(3);
+			//assign values from **tokens to buffer array.
+			for(int i = 0; i < 4; i++)
+			{
+				initCPU(i, i);	
+			}
 
+			//incrementing in buffer from initCPU().
 			in = (in+1)%BUFF_SIZE;
 	
 			//freeing tokens to update values there.
@@ -177,28 +183,82 @@ void* Reader(void* file)
 
 void* Analyzer()
 {
-	for(;;)
+
+	//initialize help variables
+	ull PrevIdle[CORE_NUM][MAX_LENGTH_L], PrevIOWait[CORE_NUM][MAX_LENGTH_L], Idle[CORE_NUM][MAX_LENGTH_L], IOWait[CORE_NUM][MAX_LENGTH_L],
+	PrevNonIdle[CORE_NUM][MAX_LENGTH_L], PrevUser[CORE_NUM][MAX_LENGTH_L], PrevNice[CORE_NUM][MAX_LENGTH_L], PrevSystem[CORE_NUM][MAX_LENGTH_L],
+	PrevIrq[CORE_NUM][MAX_LENGTH_L], PrevSoftIrq[CORE_NUM][MAX_LENGTH_L], PrevSteal[CORE_NUM][MAX_LENGTH_L], NonIdle[CORE_NUM][MAX_LENGTH_L],
+	PrevTotal[CORE_NUM][MAX_LENGTH_L], Total[CORE_NUM][MAX_LENGTH_L], totald[CORE_NUM][MAX_LENGTH_L], idled[CORE_NUM][MAX_LENGTH_L];
+
+	for(int j=0; j < 1000; j++)
 	{
 
 		//Remove from the buffer
 		sem_wait(&full);
 		pthread_mutex_lock(&mutex);
 	
-		//Retrieve values from buffer	
-		core[0]._usertime = buffer[0][0];
+		//Retrieve previous values from buffer to cores
+		for(int i = 0; i < 4; i++)
+		{
+			Idle[i][j] = buffer[i][3];
+			IOWait[i][j] = buffer[i][4];
 
-	//	out = (out+1)%BUFF_SIZE;
+			PrevUser[i][j] = buffer[i][0];
+			PrevNice[i][j] = buffer[i][1];
+			PrevSystem[i][j] = buffer[i][2];
+			PrevIdle[i][j] = buffer[i][3];
+			PrevIOWait[i][j] = buffer[i][4];
+			PrevIrq[i][j] = buffer[i][5];
+			PrevSoftIrq[i][j] = buffer[i][6];
+			PrevSteal[i][j] = 0;
+
+			core[i]._usertime = PrevUser[i][j];
+			core[i]._nicetime = PrevNice[i][j];
+			core[i]._systemtime = PrevSystem[i][j];
+			core[i]._idletime = PrevIdle[i][j];
+			core[i]._io_wait = PrevIOWait[i][j];
+			core[i]._irq = PrevIrq[i][j];
+			core[i]._soft_irq = PrevSoftIrq[i][j];
+			core[i]._steal = PrevSteal[i][j];
+			core[i]._guest = 0;
+			core[i]._guest_nice = 0;
+
+
+			//Calculating usage of cpu
+			PrevIdle[i][j-1] = PrevIdle[i][j-1] + PrevIOWait[i][j-1];
+			Idle[i][j] = Idle[i][j] + IOWait[i][j];
+			
+			PrevNonIdle[i][j] = PrevUser[i][j-1] + PrevNice[i][j-1] + PrevSystem[i][j-1] + PrevIrq[i][j-1] + PrevSoftIrq[i][j-1] + PrevSteal[i][j-1];
+			NonIdle[i][j] = core[i]._usertime + core[i]._nicetime + core[i]._systemtime + core[i]._irq + core[i]._soft_irq + core[i]._steal; 
+		
+			PrevTotal[i][j] = PrevIdle[i][j-1] + PrevNonIdle[i][j];
+			Total[i][j] = Idle[i][j] + NonIdle[i][j];
+
+			totald[i][j] = Total[i][j] - PrevTotal[i][j];
+			idled[i][j] = Idle[i][j] - PrevIdle[i][j-1];
+
+			CPU_PERCENTAGE[i] = (double)(totald[i][j] - idled[i][j]) / totald[i][j];
+
+		}
 	
+		
 		pthread_mutex_unlock(&mutex);
 		sem_post(&empty);
 
-
-		//Consume
-		printf("%llu\n", core[0]._usertime);
-		sleep(1);
+		/* //Consume */
+		/* printf("%.1f%%\n", CPU_PERCENTAGE[1] * 100); */
+		/* sleep(1); */
 	}
 
+	return NULL;
 }
+
+void* Printer(void* CPU_RESULT)
+{
+
+	return NULL;
+}
+
 
 int main(void)
 {
