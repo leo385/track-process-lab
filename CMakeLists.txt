@@ -7,7 +7,7 @@ set(CMAKE_C_STANDARD_REQUIRED TRUE)
 add_compile_options(-Wall -Wextra)
 
 #Read all 'c' files from src
-file(GLOB_RECURSE SOURCES src/*.c)
+file(GLOB_RECURSE SOURCES src/*.c src/*.h)
 
 #exec settings
 add_executable(main ${SOURCES})
